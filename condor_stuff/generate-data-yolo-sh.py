@@ -1,0 +1,260 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+import numpy as np
+from numpy import random
+import matplotlib.pyplot as plt
+import pandas as pd
+import sys
+from matplotlib import colors
+from PIL import Image
+import os
+import json
+import pyarrow.parquet as pq
+
+#in pixels
+sensor_height = 1280
+sensor_width = 320 
+
+frame_height = 1280 + (2 * (13 - 1))
+frame_width = 320 + (2 * (21 - 1))
+
+roi_height = 13
+roi_width = 21
+
+def generate_roi(parquet_name, labels_name, name = 'default_name', file_location = '/uscms/home/azhou/smart-pixels-ml/'):
+
+    #starts with enlarged frame of zeroes
+    arr = np.zeros((frame_height, frame_width))
+
+    #selects random location for roi
+    rand_height = random.randint(6, frame_height-6)
+    rand_width = random.randint(10, frame_width-10)
+
+    #creates an roi of 1's (for temporary viewing)
+    arr[rand_height - 6:rand_height + 7, rand_width-10:rand_width + 11] = 1
+
+    #selects the dataframes
+    sys.path.append('/uscms/home/azhou/nobackup/parquet/dataset8/unflipped/')
+    eosdir = '/uscms/home/azhou/nobackup/parquet/dataset8/unflipped/'
+
+    df = pd.read_parquet(eosdir+parquet_name)
+    df_true = pd.read_parquet(eosdir+labels_name)
+
+    #randomly selects a timeslice and event for a 13x21 array
+    rand_event_choice = random.randint(49000)
+    rand_arr = np.array(df.iloc[rand_event_choice]).reshape(20,13,21)
+    timeslice = random.randint(8) #takes a random timeslice from that randomly chosen event
+    randslice = rand_arr[timeslice,:,:]
+    #print(randslice.max())
+
+    tmp_df = df_true.iloc[rand_event_choice]
+    
+    #rescale for units (normalization from 1 to 255)
+    randslice *= 255.0/4000
+    #sets all normalized charges above 255 to be 255
+    def limit_numbers(arr, threshold):
+        arr[arr > threshold] = threshold
+        return arr
+    def neg_limit_numbers(arr, negthresh):
+        arr[arr < negthresh] = negthresh
+        return arr
+    randslice = limit_numbers(randslice, 255)
+    randslice = neg_limit_numbers(randslice, -255)
+
+    #fills the roi with the particle event (13x21 array)
+    arr[rand_height - 6:rand_height + 7, rand_width-10:rand_width + 11] = randslice
+    #print(rand_height-6, rand_width-10)
+    #print(arr.shape, randslice.shape)
+    #[y1:y2, x1:x2]
+
+    
+    #truncates the frame to leave just the sensor
+    sensor_arr = arr[12:frame_height - 12, 20:frame_width - 20]
+
+    # Create a boolean mask where the absolute value of the element is greater than 10
+    mask = np.abs(sensor_arr) > 10
+
+    # Find the indices of the elements that satisfy the condition
+    non_zero_indices = np.nonzero(mask)
+
+    # Get the x-coordinates (column indices) of the non-zero elements
+    x_coords = non_zero_indices[1]
+    y_coords = non_zero_indices[0]
+
+
+    # Get the minimum x-coordinate
+    min_x = x_coords.min() if x_coords.size > 0 else None
+    max_x = x_coords.max() if x_coords.size > 0 else None
+    
+    max_y = y_coords.max() if y_coords.size > 0 else None
+    min_y = y_coords.min() if y_coords.size > 0 else None
+
+    if None in [min_x, max_x, min_y, max_y]:
+        print("Skipping due to missing coordinates")
+        return None # Exit the function early
+
+    av_x = int(0.5 * (min_x + max_x))
+    av_y = int(0.5 * (min_y + max_y))
+    w = max_x - min_x
+    h = max_y - min_y
+    
+    if 0 in [w,h]:
+        print("Skipping due to zero w/h")
+        return None # Exit the function early
+
+    yolo2 = [av_x / 320, av_y / 1280, w / 320, h / 1280]
+    #print(yolo2)
+
+    yolo_width = 21
+    yolo_height = 13
+
+    if rand_width > 319:
+        rand_width = 319
+    if rand_width < 1: 
+        rand_width = 1
+    if rand_height > 1279:
+        rand_height = 1279
+    if rand_height < 1:
+        rand_height = 1
+    
+    if rand_width < 11:
+        yolo_width = 2 * rand_width
+    if rand_width > 309:
+        yolo_width = 2 * (320 - rand_width)
+    if rand_height < 7:
+        yolo_height = 2 * rand_height
+    if rand_height > 1273:
+        yolo_height = 2 * (1280 - rand_height)
+
+    yolo_width = yolo_width / 320
+    yolo_height = yolo_height / 1280
+    yolo = [rand_width / 320, rand_height / 1280, yolo_width, yolo_height]
+    #print(yolo)
+
+    return_dict = {'yolo':yolo, 'yolo2':yolo2, 'df':tmp_df, 'timeslice':timeslice}
+  
+    int_array = sensor_arr.astype(int)
+
+    #noise array
+    mean = 0.
+    stdev = 5.
+    noise = np.random.normal(mean, stdev, (1280,320))
+
+    #limits noise to 255
+    noise = np.clip(noise, 0, 255).astype(np.uint8)
+    
+    int_array = int_array + noise
+    
+    cmap = plt.cm.RdYlBu
+    norm = plt.Normalize(vmin=-255, vmax=255)
+    
+    normalized_array = norm(int_array)
+
+# Apply the colormap to get RGBA values
+    image_rgba = cmap(normalized_array)
+
+# Convert the RGBA image to an 8-bit [0, 255] format (if desired as an 8-bit PNG)
+    image_rgb = (image_rgba[:, :, :3] * 255).astype(np.uint8)  # Remove alpha and scale to [0, 255]
+    print(image_rgb.shape)
+
+# Save the image
+    file_path = f'{file_location}{name}.png'
+    plt.imsave(file_path, image_rgb)
+    
+    #image = cmap(norm(int_array))
+    #file_path = file_location + f'{name}.png'
+    #plt.imsave(file_path, image)
+
+    #prints image
+    divnorm=colors.TwoSlopeNorm(vmin=-255, vcenter=0., vmax=255)
+    '''im = plt.imshow(int_array, cmap='bwr', norm=divnorm, interpolation="nearest", aspect='auto')'''
+
+    #, extent=(0,21*50,0,13*12.5)
+    #plt.axis('off')
+    #plt.colorbar(im, orientation='horizontal')
+    
+    '''plt.show()'''
+    
+    #plt.savefig(f'/home/azhou/smart-pixels-ml/generated-data/{name}.png')
+    #plt.savefig(f'/home/azhou/smart-pixels-ml/generated-data/{name}.png', bbox_inches='tight', pad_inches=0)
+
+    #save as parquet file
+
+    return return_dict
+
+#for i in range(100,120):
+#    generate_roi(name=f'generated_event_{i+1}')
+#    print(i+1)
+
+def generate_and_annotate(all_path = '/uscms/home/azhou/nobackup/sahi/train/images/', t_path = '', df_path = '', num=10):
+
+    eosdir = '/uscms/home/azhou/nobackup/parquet/dataset8/unflipped/'
+    file_names = [f for f in os.listdir(eosdir) if os.path.isfile(os.path.join(eosdir, f)) and (f.startswith('recon3D_') or f.startswith('labels_'))]
+    recon3d_to_labels = {}
+    
+    # Loop through all recon3D_ files to find the corresponding labels_ files
+    for f in file_names:
+        if f.startswith('recon3D_'):
+            # Extract the number from the recon3D_ file name (e.g., "recon3D_10" -> 10)
+            number = f[len('recon3D_'):]
+            
+            # Find the corresponding labels_ file
+            labels_file = f'labels_{number}'
+            
+            # Check if the corresponding labels_ file exists
+            if labels_file in file_names:
+                recon3d_to_labels[f] = labels_file
+
+    for i in range(num):
+        id_num = i + 82760
+
+        random_recon3d = random.choice(list(recon3d_to_labels.keys()))
+        random_labels = recon3d_to_labels[random_recon3d]
+        
+        temp_dict = generate_roi(parquet_name = random_recon3d, labels_name = random_labels, name=f'generated_event_{id_num}', file_location = all_path)
+        #temp_dict = {corners:corners, box:box}
+        if temp_dict is None:
+            print(f"Skipping event {id_num} due to missing coordinates")
+            continue
+        if temp_dict['yolo2'][2] == 0 or temp_dict['yolo2'][3] == 0:
+            print(f"Skipping event {id_num} due to zero w/h")
+            continue
+
+        #label.txt writer
+        id_labels_path = t_path + f'generated_event_{id_num}.txt'
+        with open(id_labels_path, "w") as file:
+            file.write(f"0 {temp_dict['yolo2'][0]} {temp_dict['yolo2'][1]} {temp_dict['yolo2'][2]} {temp_dict['yolo2'][3]}")
+
+        df_dict = temp_dict['df']
+        id_df_path = df_path + f'df_generated_event_{id_num}.txt'
+        with open(id_df_path, 'w') as file:
+            file.write(f"x-entry: {df_dict['x-entry']}\n" 
+               f"y-entry: {df_dict['y-entry']}\n"
+               f"z-entry: {df_dict['z-entry']}\n"
+               f"n_x: {df_dict['n_x']}\n"
+               f"n_y: {df_dict['n_y']}\n"
+               f"n_z: {df_dict['n_z']}\n"
+               f"number_eh_pairs: {df_dict['number_eh_pairs']}\n"
+               f"y-local: {df_dict['y-local']}\n"
+               f"pt: {df_dict['pt']}\n"
+               f"cotAlpha: {df_dict['cotAlpha']}\n"
+               f"cotBeta: {df_dict['cotBeta']}\n"
+               f"y-midplane: {df_dict['y-midplane']}\n"
+               f"x-midplane: {df_dict['x-midplane']}\n"
+               f"my_cluster_width: {temp_dict['yolo2'][2] * 320}\n" 
+               f"my_cluster_height: {temp_dict['yolo2'][3] * 1280}\n"
+               f"my_timeslice: {temp_dict['timeslice']}")
+    
+        if id_num % 1000 == 0:
+            print(id_num)
+    print(id_num)
+
+generate_and_annotate(all_path = './images/',
+                      t_path = './labels/',
+                      df_path = './df/',
+                      num = 500000)
+
