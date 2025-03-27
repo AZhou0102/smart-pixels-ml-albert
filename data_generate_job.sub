@@ -1,0 +1,14 @@
+Universe = vanilla
+Executable = /uscms/home/azhou/nobackup/condor_stuff/data_generate_notebook.sh
+Log = /uscms/home/azhou/nobackup/condor_stuff/condor_notes/job.log           
+Output = /uscms/home/azhou/nobackup/condor_stuff/condor_notes/job.out    
+Error = /uscms/home/azhou/nobackup/condor_stuff/condor_notes/job.err
++ApptainerImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/jdickins/yolo:latest"
+should_transfer_files  = YES
+transfer_input_files  = /uscms/home/azhou/nobackup/condor_stuff/generate-data-yolo-sh.py, ./newenv.tar.gz
+transfer_output_files = generated_labels/*, generated_df/*, generated_images/*
+when_to_transfer_output = ON_EXIT_OR_EVICT
+Request_Cpus = 1                          
+Request_Memory = 8GB
+
+Queue                                      
