@@ -1,0 +1,14 @@
+Universe = vanilla
+Executable = SCRIPT_PLACEHOLDER
+Log = job.log           
+Output = job.out    
+Error = job.err
+should_transfer_files = YES
+transfer_input_files = PY_PLACEHOLDER,parquet/dataset8/unflipped/recon3D_dNUM.parquet,parquet/dataset8/unflipped/labels_dNUM.parquet
+transfer_output_files = valid_TAG_output.tar.gz
+when_to_transfer_output = ON_EXIT_OR_EVICT
+Request_Memory = 8GB
+
++ApptainerImage = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/jdickins/yolo:latest"
+
+Queue 1
